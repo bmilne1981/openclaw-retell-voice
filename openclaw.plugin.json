@@ -1,0 +1,114 @@
+{
+  "id": "retell-voice",
+  "name": "Retell Voice",
+  "description": "Voice calls via Retell AI - talk to your OpenClaw assistant by phone with full tool access",
+  "homepage": "https://github.com/openclaw/retell-voice",
+  "uiHints": {
+    "enabled": {
+      "label": "Enable Retell Voice"
+    },
+    "apiKey": {
+      "label": "Retell API Key",
+      "sensitive": true,
+      "help": "Your Retell AI API key (optional, for call management)"
+    },
+    "allowFrom": {
+      "label": "Allowed Callers",
+      "help": "Phone numbers allowed to call (E.164 format, e.g. +15551234567)"
+    },
+    "greeting": {
+      "label": "Greeting",
+      "help": "What to say when answering a call"
+    },
+    "websocket.port": {
+      "label": "WebSocket Port",
+      "help": "Port for Retell Custom LLM WebSocket server"
+    },
+    "websocket.path": {
+      "label": "WebSocket Path"
+    },
+    "tailscale.mode": {
+      "label": "Tailscale Mode",
+      "advanced": true
+    },
+    "tailscale.path": {
+      "label": "Tailscale Path",
+      "advanced": true
+    },
+    "responseModel": {
+      "label": "Response Model",
+      "advanced": true,
+      "help": "Model to use for voice responses (defaults to agent default)"
+    },
+    "responseTimeoutMs": {
+      "label": "Response Timeout (ms)",
+      "advanced": true
+    }
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "enabled": {
+        "type": "boolean",
+        "default": true
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "Retell AI API key"
+      },
+      "allowFrom": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Phone numbers allowed to use voice (E.164 format)"
+      },
+      "greeting": {
+        "type": "string",
+        "default": "Hey! What's up?",
+        "description": "Initial greeting when call connects"
+      },
+      "websocket": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "port": {
+            "type": "integer",
+            "default": 8765,
+            "minimum": 1,
+            "maximum": 65535
+          },
+          "path": {
+            "type": "string",
+            "default": "/llm-websocket"
+          }
+        }
+      },
+      "tailscale": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["off", "serve", "funnel"],
+            "default": "off"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "responseModel": {
+        "type": "string",
+        "description": "Model override for voice responses"
+      },
+      "responseTimeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 120000,
+        "default": 30000
+      }
+    }
+  }
+}
