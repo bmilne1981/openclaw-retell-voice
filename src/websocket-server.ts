@@ -132,12 +132,19 @@ async function handleMessage(ws: WebSocket, session: CallSession, data: RawData)
     // Handle call details - verify caller
     if (interactionType === "call_details") {
       const call = event.call || {};
-      session.fromNumber = call.from_number;
+      const direction = call.direction || "inbound";
+      const fromNumber = call.from_number;
+      const toNumber = call.to_number;
       
-      ctx.logger.info(`[retell-voice] 📱 Caller: ${session.fromNumber}`);
+      // For inbound: check from_number (caller)
+      // For outbound: check to_number (person we're calling) - we initiated it
+      const numberToCheck = direction === "outbound" ? toNumber : fromNumber;
+      const phoneForSession = direction === "outbound" ? toNumber : fromNumber;
+      
+      ctx.logger.info(`[retell-voice] 📱 Call: ${direction} | from: ${fromNumber} | to: ${toNumber}`);
 
-      if (!isAllowedCaller(session.fromNumber || "", ctx.config.allowFrom)) {
-        ctx.logger.warn(`[retell-voice] 🚫 Unauthorized: ${session.fromNumber}`);
+      if (!isAllowedCaller(numberToCheck || "", ctx.config.allowFrom)) {
+        ctx.logger.warn(`[retell-voice] 🚫 Unauthorized: ${numberToCheck}`);
         ws.send(JSON.stringify({
           response_type: "response",
           response_id: 0,
@@ -148,12 +155,13 @@ async function handleMessage(ws: WebSocket, session: CallSession, data: RawData)
         return;
       }
 
-      // Caller authorized - update session key based on phone
-      const normalizedPhone = normalizePhone(session.fromNumber || session.callId);
+      // Caller/callee authorized - update session key based on phone
+      session.fromNumber = phoneForSession;
+      const normalizedPhone = normalizePhone(phoneForSession || session.callId);
       session.sessionKey = `retell:${normalizedPhone}`;
       session.authorized = true;
 
-      ctx.logger.info(`[retell-voice] ✅ Authorized: ${session.fromNumber}`);
+      ctx.logger.info(`[retell-voice] ✅ Authorized: ${phoneForSession} (${direction})`);
 
       // Send greeting
       ws.send(JSON.stringify({
