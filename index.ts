@@ -4,15 +4,16 @@
  * Enables voice calls via Retell AI's Custom LLM WebSocket protocol.
  * Callers get full access to the OpenClaw agent with tools.
  * 
- * Setup:
- * 1. Configure allowed callers and greeting in plugins.entries.retell-voice
- * 2. Expose the WebSocket endpoint via Tailscale Funnel or ngrok
- * 3. Create a Custom LLM agent in Retell dashboard pointing to your endpoint
- * 4. Assign a phone number to the agent
- * 5. Call and talk to your AI assistant!
+ * Architecture:
+ * - Retell sends voice → transcription → this plugin's WebSocket server
+ * - Plugin connects to OpenClaw Gateway as a client (same as web UI)
+ * - Uses chat.send to run agent turns with full tool access
+ * - Response streams back → TTS → voice to caller
+ * 
+ * This design uses the stable Gateway API, not internal OpenClaw modules,
+ * making it resilient to version updates and internal refactors.
  */
 
-import { loadCoreAgentDeps, type CoreConfig } from "./src/core-bridge.js";
 import { startWebSocketServer, stopWebSocketServer } from "./src/websocket-server.js";
 import type { RetellVoiceConfig } from "./src/config.js";
 
@@ -47,7 +48,7 @@ let serverRunning = false;
 
 export default function register(api: any) {
   const config = configSchema.parse(api.pluginConfig);
-  const coreConfig = api.config as CoreConfig;
+  const coreConfig = api.config;
 
   if (!config.enabled) {
     api.logger.info("[retell-voice] Plugin disabled");

@@ -1,11 +1,14 @@
 /**
  * WebSocket server for Retell AI Custom LLM protocol.
- * Handles incoming calls and routes to OpenClaw agent for responses.
+ * Handles incoming calls and routes to OpenClaw agent via Gateway WebSocket.
+ * 
+ * This version uses the stable Gateway API instead of embedding the agent directly,
+ * making it resilient to OpenClaw internal refactors.
  */
 
 import crypto from "node:crypto";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
-import { loadCoreAgentDeps, type CoreConfig, type CoreAgentDeps } from "./core-bridge.js";
+import { GatewayClient, type GatewayClientConfig } from "./gateway-client.js";
 import { isAllowedCaller, normalizePhone, type RetellVoiceConfig } from "./config.js";
 
 interface CallSession {
@@ -13,17 +16,16 @@ interface CallSession {
   fromNumber?: string;
   authorized: boolean;
   transcript: Array<{ role: "user" | "agent"; content: string }>;
-  sessionId: string;
   sessionKey: string;
 }
 
 interface ServerContext {
   config: RetellVoiceConfig;
-  coreConfig: CoreConfig;
+  coreConfig: any;
   logger: any;
   wss: WebSocketServer | null;
   activeCalls: Map<string, CallSession>;
-  deps: CoreAgentDeps | null;
+  gateway: GatewayClient;
 }
 
 let ctx: ServerContext | null = null;
@@ -33,18 +35,38 @@ let ctx: ServerContext | null = null;
  */
 export async function startWebSocketServer(opts: {
   config: RetellVoiceConfig;
-  coreConfig: CoreConfig;
+  coreConfig: any;
   logger: any;
 }): Promise<void> {
   if (ctx?.wss) {
     throw new Error("Server already running");
   }
 
-  // Pre-load core dependencies
-  const deps = await loadCoreAgentDeps();
+  // Get gateway connection info from config or defaults
+  const gatewayPort = opts.coreConfig?.gateway?.port || 18789;
+  const gatewayToken = opts.coreConfig?.gateway?.auth?.token || process.env.OPENCLAW_GATEWAY_TOKEN;
+  const gatewayPassword = opts.coreConfig?.gateway?.auth?.password || process.env.OPENCLAW_GATEWAY_PASSWORD;
 
-  // Accept any path - let the connection handler extract the call ID
-  // Funnel strips the /llm-websocket prefix, so we get just /{call_id}
+  // Create gateway client
+  const gatewayConfig: GatewayClientConfig = {
+    port: gatewayPort,
+    host: "127.0.0.1",
+    token: gatewayToken,
+    password: gatewayPassword,
+  };
+
+  const gateway = new GatewayClient(gatewayConfig, opts.logger);
+
+  // Connect to gateway
+  try {
+    await gateway.connect();
+    opts.logger.info("[retell-voice] Connected to OpenClaw gateway");
+  } catch (err) {
+    opts.logger.error("[retell-voice] Failed to connect to gateway:", err);
+    throw err;
+  }
+
+  // Create WebSocket server for Retell connections
   const wss = new WebSocketServer({
     port: opts.config.websocket.port,
   });
@@ -55,7 +77,7 @@ export async function startWebSocketServer(opts: {
     logger: opts.logger,
     wss,
     activeCalls: new Map(),
-    deps,
+    gateway,
   };
 
   wss.on("connection", handleConnection);
@@ -69,6 +91,8 @@ export async function startWebSocketServer(opts: {
  */
 export async function stopWebSocketServer(): Promise<void> {
   if (!ctx?.wss) return;
+
+  ctx.gateway.disconnect();
 
   return new Promise((resolve) => {
     ctx!.wss!.close(() => {
@@ -96,13 +120,12 @@ function handleConnection(ws: WebSocket, req: any) {
     fromNumber: undefined,
     authorized: false,
     transcript: [],
-    sessionId: crypto.randomUUID(),
     sessionKey: `retell:${callId}`,
   };
 
   ctx.activeCalls.set(callId, session);
 
-  // Send initial config - request call details for caller verification
+  // Send initial config
   ws.send(JSON.stringify({
     response_type: "config",
     config: {
@@ -136,8 +159,6 @@ async function handleMessage(ws: WebSocket, session: CallSession, data: RawData)
       const fromNumber = call.from_number;
       const toNumber = call.to_number;
       
-      // For inbound: check from_number (caller)
-      // For outbound: check to_number (person we're calling) - we initiated it
       const numberToCheck = direction === "outbound" ? toNumber : fromNumber;
       const phoneForSession = direction === "outbound" ? toNumber : fromNumber;
       
@@ -155,7 +176,7 @@ async function handleMessage(ws: WebSocket, session: CallSession, data: RawData)
         return;
       }
 
-      // Caller/callee authorized - update session key based on phone
+      // Update session key based on phone
       session.fromNumber = phoneForSession;
       const normalizedPhone = normalizePhone(phoneForSession || session.callId);
       session.sessionKey = `retell:${normalizedPhone}`;
@@ -185,7 +206,6 @@ async function handleMessage(ws: WebSocket, session: CallSession, data: RawData)
 
     // Handle response required
     if (interactionType === "response_required" || interactionType === "reminder_required") {
-      // If we haven't received call details yet, wait for authorization
       if (!session.authorized && ctx.config.allowFrom.length > 0) {
         ws.send(JSON.stringify({
           response_type: "response",
@@ -197,15 +217,11 @@ async function handleMessage(ws: WebSocket, session: CallSession, data: RawData)
         return;
       }
 
-      // Get transcript from event
       const transcript = event.transcript || [];
-      
-      // Find the last user message
       const userMessages = transcript.filter((t: any) => t.role === "user");
       const lastUserMessage = userMessages[userMessages.length - 1];
       
       if (!lastUserMessage?.content) {
-        // No user message yet, send a prompt
         ws.send(JSON.stringify({
           response_type: "response",
           response_id: event.response_id,
@@ -224,13 +240,12 @@ async function handleMessage(ws: WebSocket, session: CallSession, data: RawData)
 
       ctx.logger.info(`[retell-voice] 📝 User: ${lastUserMessage.content.substring(0, 50)}...`);
 
-      // Generate response using OpenClaw agent
+      // Generate response via Gateway
       try {
         const response = await generateAgentResponse(session, lastUserMessage.content);
         
         ctx.logger.info(`[retell-voice] 🤖 Response: ${response.substring(0, 50)}...`);
 
-        // Check for hangup intent
         const shouldEndCall = 
           response.toLowerCase().includes("goodbye") ||
           response.toLowerCase().includes("talk to you later") ||
@@ -256,8 +271,6 @@ async function handleMessage(ws: WebSocket, session: CallSession, data: RawData)
       }
     }
 
-    // update_only events are just transcript updates, no response needed
-
   } catch (err) {
     ctx.logger.error("[retell-voice] Message parse error:", err);
   }
@@ -273,58 +286,21 @@ function handleClose(session: CallSession) {
 }
 
 /**
- * Generate a response using the OpenClaw agent with full tool access
+ * Generate a response using the OpenClaw agent via Gateway WebSocket.
+ * This uses chat.send which runs the full agent with tools.
  */
 async function generateAgentResponse(session: CallSession, userMessage: string): Promise<string> {
-  if (!ctx || !ctx.deps) {
-    throw new Error("Core dependencies not loaded");
+  if (!ctx) {
+    throw new Error("Server context not initialized");
   }
 
-  const deps = ctx.deps;
-  const cfg = ctx.coreConfig;
-  const voiceConfig = ctx.config;
-
-  const agentId = "main";
-
-  // Resolve paths
-  const storePath = deps.resolveStorePath(cfg.session?.store, { agentId });
-  const agentDir = deps.resolveAgentDir(cfg, agentId);
-  const workspaceDir = deps.resolveAgentWorkspaceDir(cfg, agentId);
-
-  // Ensure workspace exists
-  await deps.ensureAgentWorkspace({ dir: workspaceDir });
-
-  // Load or create session entry
-  const sessionStore = deps.loadSessionStore(storePath);
-  const now = Date.now();
-  let sessionEntry = sessionStore[session.sessionKey] as { sessionId: string; updatedAt: number } | undefined;
-
-  if (!sessionEntry) {
-    sessionEntry = {
-      sessionId: session.sessionId,
-      updatedAt: now,
-    };
-    sessionStore[session.sessionKey] = sessionEntry;
-    await deps.saveSessionStore(storePath, sessionStore);
+  // Ensure gateway is connected
+  if (!ctx.gateway.isConnected()) {
+    await ctx.gateway.connect();
   }
-
-  const sessionFile = deps.resolveSessionFilePath(sessionEntry.sessionId, sessionEntry, { agentId });
-
-  // Resolve model
-  const modelRef = voiceConfig.responseModel || `${deps.DEFAULT_PROVIDER}/${deps.DEFAULT_MODEL}`;
-  const slashIndex = modelRef.indexOf("/");
-  const provider = slashIndex === -1 ? deps.DEFAULT_PROVIDER : modelRef.slice(0, slashIndex);
-  const model = slashIndex === -1 ? modelRef : modelRef.slice(slashIndex + 1);
-
-  // Resolve thinking level
-  const thinkLevel = deps.resolveThinkingDefault({ cfg, provider, model });
-
-  // Resolve agent identity
-  const identity = deps.resolveAgentIdentity(cfg, agentId);
-  const agentName = identity?.name?.trim() || "assistant";
 
   // Build voice-specific system prompt
-  const basePrompt = `You are ${agentName}, speaking on a phone call. The caller's number is ${session.fromNumber || "unknown"}.
+  const voicePrompt = `You are speaking on a phone call. The caller's number is ${session.fromNumber || "unknown"}.
 
 VOICE CALL GUIDELINES:
 - Keep responses SHORT and conversational (1-3 sentences max)
@@ -337,53 +313,29 @@ VOICE CALL GUIDELINES:
 Be helpful, direct, and sound like a friend - not a corporate assistant.`;
 
   // Add conversation context
-  let extraSystemPrompt = basePrompt;
+  let extraSystemPrompt = voicePrompt;
   if (session.transcript.length > 1) {
     const history = session.transcript
-      .slice(0, -1) // Exclude the current message
+      .slice(0, -1)
       .map((t) => `${t.role === "agent" ? "You" : "Caller"}: ${t.content}`)
       .join("\n");
-    extraSystemPrompt = `${basePrompt}\n\nRecent conversation:\n${history}`;
+    extraSystemPrompt = `${voicePrompt}\n\nRecent conversation:\n${history}`;
   }
 
-  // Resolve timeout
-  const timeoutMs = voiceConfig.responseTimeoutMs || deps.resolveAgentTimeoutMs({ cfg });
-  const runId = `retell:${session.callId}:${Date.now()}`;
-
-  // Run the agent
-  const result = await deps.runEmbeddedPiAgent({
-    sessionId: sessionEntry.sessionId,
+  // Send to gateway and get response
+  const result = await ctx.gateway.chat({
     sessionKey: session.sessionKey,
-    messageProvider: "retell",
-    sessionFile,
-    workspaceDir,
-    config: cfg,
-    prompt: userMessage,
-    provider,
-    model,
-    thinkLevel,
-    verboseLevel: "off",
-    timeoutMs,
-    runId,
-    lane: "retell",
-    extraSystemPrompt,
-    agentDir,
+    message: userMessage,
+    systemContext: extraSystemPrompt,
+    timeoutMs: ctx.config.responseTimeoutMs || 30000,
   });
 
-  // Extract text from payloads
-  const texts = (result.payloads ?? [])
-    .filter((p) => p.text && !p.isError)
-    .map((p) => p.text?.trim())
-    .filter(Boolean);
-
-  const text = texts.join(" ");
-
-  if (!text) {
-    if (result.meta?.aborted) {
+  if (!result.text) {
+    if (result.aborted) {
       return "Sorry, I ran out of time on that one. What were you asking?";
     }
     return "Hmm, I'm not sure what to say. Can you try again?";
   }
 
-  return text;
+  return result.text;
 }
