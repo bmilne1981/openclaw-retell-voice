@@ -1,6 +1,6 @@
 {
   "name": "openclaw-retell-voice",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Retell AI voice channel plugin for OpenClaw - talk to your AI assistant via phone",
   "type": "module",
   "main": "index.ts",
@@ -9,12 +9,22 @@
     "url": "https://github.com/bmilne1981/openclaw-retell-voice.git"
   },
   "openclaw": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "dependencies": {
     "ws": "^8.19.0"
   },
-  "keywords": ["openclaw", "retell", "voice", "phone", "ai", "assistant", "plugin"],
+  "keywords": [
+    "openclaw",
+    "retell",
+    "voice",
+    "phone",
+    "ai",
+    "assistant",
+    "plugin"
+  ],
   "author": "Brian Milne <bmilne1981@gmail.com>",
   "license": "MIT",
   "bugs": {
