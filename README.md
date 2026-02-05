@@ -2,7 +2,7 @@
 
 Talk to your OpenClaw AI assistant by phone — with full tool access.
 
-This plugin integrates [Retell AI](https://www.retellai.com/) with OpenClaw, enabling voice conversations that have the same capabilities as your text chats. Ask your assistant to check your calendar, send messages, look things up, or anything else it can do via text.
+This plugin integrates [Retell AI](https://www.retellai.com/) with OpenClaw, enabling voice conversations that have the same capabilities as your text chats. Ask your assistant to check your calendar, send messages, control your smart home, or anything else it can do via text.
 
 ## How It Works
 
@@ -11,33 +11,38 @@ This plugin integrates [Retell AI](https://www.retellai.com/) with OpenClaw, ena
 3. **Your agent responds with tools** — Same agent, same memory, same capabilities as text
 
 ```
-Phone Call → Retell (STT) → This Plugin → OpenClaw Agent → This Plugin → Retell (TTS) → Phone Call
+Phone Call → Retell (STT) → This Plugin → OpenClaw Agent → This Plugin → Retell (TTS) → Phone
 ```
 
-## Quick Start
+The plugin connects to the OpenClaw Gateway WebSocket API internally, using the stable public `chat.send` interface. This means it won't break when OpenClaw internals change.
 
-### 1. Install the Plugin
+## Installation
 
 ```bash
-# From npm (when published)
-openclaw plugins install @openclaw/retell-voice
+# From npm
+npm install openclaw-retell-voice
 
-# Or link locally for development
-openclaw plugins install -l ./extensions/retell-voice
+# Then add to OpenClaw
+openclaw plugins install openclaw-retell-voice
 ```
 
-### 2. Configure
+Or install directly:
+```bash
+openclaw plugins install openclaw-retell-voice
+```
+
+## Configuration
 
 Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
 
-```json5
+```json
 {
   "plugins": {
     "entries": {
       "retell-voice": {
         "enabled": true,
         "config": {
-          "allowFrom": ["+15551234567", "+15559876543"],  // Allowed callers
+          "allowFrom": ["+15551234567", "+15559876543"],
           "greeting": "Hey! What's up?",
           "websocket": {
             "port": 8765
@@ -49,13 +54,27 @@ Add to your OpenClaw config (`~/.openclaw/openclaw.json`):
 }
 ```
 
-### 3. Expose the WebSocket Endpoint
+### Configuration Options
 
-Retell needs to reach your server. Options:
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | boolean | `true` | Enable/disable the plugin |
+| `allowFrom` | string[] | `[]` | Allowed caller phone numbers (E.164 format). Empty = allow all |
+| `greeting` | string | `"Hey! What's up?"` | What the agent says when answering |
+| `websocket.port` | number | `8765` | WebSocket server port |
+| `websocket.path` | string | `"/llm-websocket"` | WebSocket path prefix |
+| `responseTimeoutMs` | number | `30000` | Response generation timeout |
+
+## Retell Setup
+
+### 1. Expose the WebSocket Endpoint
+
+Retell needs to reach your plugin's WebSocket server from the internet.
 
 **Tailscale Funnel (recommended):**
 ```bash
-tailscale funnel 8765
+tailscale serve --bg --set-path=/llm-websocket http://localhost:8765
+tailscale funnel --bg 443
 ```
 
 **ngrok:**
@@ -63,7 +82,7 @@ tailscale funnel 8765
 ngrok http 8765
 ```
 
-### 4. Set Up Retell
+### 2. Configure Retell
 
 1. Sign up at [retellai.com](https://www.retellai.com/)
 2. Create a new agent → Choose **Custom LLM**
@@ -71,59 +90,89 @@ ngrok http 8765
    ```
    wss://your-hostname.ts.net/llm-websocket/
    ```
+   (Include the trailing slash!)
 4. Get a phone number and assign it to your agent
+
+### 3. Add Allowed Callers
+
+Update your config with the phone numbers that should be able to call:
+
+```json
+"allowFrom": ["+15551234567"]
+```
+
+Use E.164 format (country code + number, no spaces or dashes).
+
+### 4. Restart OpenClaw
+
+```bash
+openclaw gateway restart
+```
 
 ### 5. Call Your Number!
 
-That's it. Call the number and start talking to your AI assistant.
+That's it. Call the Retell number and talk to your AI assistant.
 
-## Configuration
+## Architecture
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `enabled` | boolean | `true` | Enable/disable the plugin |
-| `apiKey` | string | - | Retell API key (optional, for call management) |
-| `allowFrom` | string[] | `[]` | Allowed caller phone numbers (E.164 format). Empty = allow all |
-| `greeting` | string | `"Hey! What's up?"` | What to say when answering |
-| `websocket.port` | number | `8765` | WebSocket server port |
-| `websocket.path` | string | `"/llm-websocket"` | WebSocket path prefix |
-| `responseModel` | string | - | Model override for voice responses |
-| `responseTimeoutMs` | number | `30000` | Response generation timeout |
+The plugin:
 
-## CLI Commands
+1. **Starts a WebSocket server** on the configured port
+2. **Receives Retell events** (call start, user speech, etc.)
+3. **Connects to OpenClaw Gateway** as an operator client
+4. **Uses `chat.send`** to run agent turns with full tool access
+5. **Streams responses back** to Retell for TTS
 
-```bash
-# Check server status
-openclaw retell status
-```
+Each caller gets their own session (keyed by phone number), so conversation history persists across calls.
 
 ## Security
 
-- **Caller filtering**: Only numbers in `allowFrom` can use the service
-- **Phone number format**: Use E.164 format (`+15551234567`)
-- **Session isolation**: Each caller gets their own session based on phone number
-- **No credentials exposed**: Retell handles telephony; your OpenClaw stays private
+- **Caller allowlist**: Only numbers in `allowFrom` can use the service
+- **Session isolation**: Each phone number gets a separate session
+- **Local WebSocket**: The Retell→Plugin connection requires exposing a port, but Plugin→OpenClaw stays local
+- **No credentials in transit**: Retell handles telephony; your OpenClaw API keys stay on your machine
 
-## Limitations
+## Costs
 
-- **Retell's TTS/STT**: Voice quality depends on Retell's providers
-- **Latency**: Expect 1-3 seconds response time (STT + LLM + TTS)
-- **Cost**: Retell charges per minute (~$0.10-0.16/min depending on plan)
+- **Retell**: ~$0.10-0.16/min depending on plan
+- **OpenClaw/Claude**: Normal token costs for agent responses
+- **Latency**: Expect ~3-5 seconds for responses (STT + LLM + TTS)
+
+## Troubleshooting
+
+**Call connects but no response:**
+- Check `openclaw gateway restart` to reload the plugin
+- Verify WebSocket server is running: `curl http://localhost:8765/`
+- Check logs: `tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | grep retell`
+
+**"Unauthorized" in logs:**
+- Add the caller's phone number to `allowFrom` (E.164 format)
+
+**Webhook URL not connecting:**
+- Make sure Tailscale Funnel or ngrok is running
+- URL should end with `/llm-websocket/` (trailing slash matters for some Retell configs)
 
 ## Development
 
 ```bash
-# Clone and link
-cd ~/clawd/extensions/retell-voice
+# Clone the repo
+git clone https://github.com/bmilne1981/openclaw-retell-voice.git
+cd openclaw-retell-voice
+
+# Link for local development
 openclaw plugins install -l .
 
-# Restart gateway to load changes
+# Make changes, then restart
 openclaw gateway restart
 
-# Check logs
-openclaw retell status
+# Watch logs
+tail -f /tmp/openclaw/openclaw-$(date +%Y-%m-%d).log | grep retell
 ```
 
 ## License
 
 MIT
+
+## Credits
+
+Built for [OpenClaw](https://github.com/openclaw/openclaw) using the [Retell AI](https://www.retellai.com/) platform.
