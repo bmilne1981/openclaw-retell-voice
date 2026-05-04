@@ -1,5 +1,5 @@
 {
-  "name": "openclaw-retell-voice",
+  "name": "retell-voice",
   "version": "0.1.1",
   "description": "Retell AI voice channel plugin for OpenClaw - talk to your AI assistant via phone",
   "type": "module",

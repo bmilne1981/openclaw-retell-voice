@@ -47,7 +47,7 @@ export async function startWebSocketServer(opts: {
   const gatewayToken = opts.coreConfig?.gateway?.auth?.token || process.env.OPENCLAW_GATEWAY_TOKEN;
   const gatewayPassword = opts.coreConfig?.gateway?.auth?.password || process.env.OPENCLAW_GATEWAY_PASSWORD;
 
-  // Create gateway client
+  // Create gateway client (HTTP-based)
   const gatewayConfig: GatewayClientConfig = {
     port: gatewayPort,
     host: "127.0.0.1",
@@ -57,13 +57,13 @@ export async function startWebSocketServer(opts: {
 
   const gateway = new GatewayClient(gatewayConfig, opts.logger);
 
-  // Connect to gateway
+  // Verify gateway is reachable
   try {
     await gateway.connect();
-    opts.logger.info("[retell-voice] Connected to OpenClaw gateway");
+    opts.logger.info("[retell-voice] Gateway reachable via HTTP Chat Completions");
   } catch (err) {
-    opts.logger.error("[retell-voice] Failed to connect to gateway:", err);
-    throw err;
+    opts.logger.warn("[retell-voice] Gateway not reachable at startup (will retry on call):", err);
+    // Don't throw — HTTP is stateless, gateway may come up later
   }
 
   // Create WebSocket server for Retell connections
@@ -313,20 +313,20 @@ VOICE CALL GUIDELINES:
 Be helpful, direct, and sound like a friend - not a corporate assistant.`;
 
   // Add conversation context
-  let extraSystemPrompt = voicePrompt;
+  let systemPrompt = voicePrompt;
   if (session.transcript.length > 1) {
     const history = session.transcript
       .slice(0, -1)
       .map((t) => `${t.role === "agent" ? "You" : "Caller"}: ${t.content}`)
       .join("\n");
-    extraSystemPrompt = `${voicePrompt}\n\nRecent conversation:\n${history}`;
+    systemPrompt = `${voicePrompt}\n\nRecent conversation:\n${history}`;
   }
 
-  // Send to gateway and get response
+  // Send to gateway via HTTP Chat Completions
   const result = await ctx.gateway.chat({
     sessionKey: session.sessionKey,
     message: userMessage,
-    systemContext: extraSystemPrompt,
+    systemContext: systemPrompt,
     timeoutMs: ctx.config.responseTimeoutMs || 30000,
   });
 
